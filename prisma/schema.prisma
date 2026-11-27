@@ -1,0 +1,262 @@
+// Prisma schema for Travel CRM
+// Dev: SQLite. Prod: switch provider to "postgresql" and set DATABASE_URL.
+// Enums are intentionally modeled as String (+ app-level constants) so the
+// same schema works on both SQLite and PostgreSQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users / staff
+// ---------------------------------------------------------------------------
+model User {
+  id           String   @id @default(cuid())
+  login        String   @unique
+  passwordHash String
+  fullName     String
+  role         String   @default("employee") // "owner" | "employee"
+  active       Boolean  @default(true)
+  permissions  String? // JSON array of extra permission keys
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  salesAsSeller    Sale[]           @relation("SaleSeller")
+  ticketsAsSeller  Ticket[]         @relation("TicketSeller")
+  paymentsReceived Payment[]        @relation("PaymentReceiver")
+  partnerPayments  PartnerPayment[] @relation("PartnerPaymentBy")
+  expenses         Expense[]        @relation("ExpenseBy")
+  managedClients   Client[]         @relation("ClientManager")
+  auditLogs        AuditLog[]
+}
+
+// ---------------------------------------------------------------------------
+// Currencies & settings
+// ---------------------------------------------------------------------------
+model Currency {
+  code   String  @id // USD, VND, EUR, ...
+  name   String
+  symbol String?
+  isBase Boolean @default(false)
+  active Boolean @default(true)
+}
+
+model Setting {
+  key   String @id
+  value String
+}
+
+// ---------------------------------------------------------------------------
+// Clients
+// ---------------------------------------------------------------------------
+model Client {
+  id        String   @id @default(cuid())
+  firstName String
+  lastName  String?
+  phone     String
+  email     String?
+  note      String?
+  managerId String?
+  manager   User?    @relation("ClientManager", fields: [managerId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sales    Sale[]
+  tickets  Ticket[]
+  payments Payment[]
+
+  @@index([phone])
+}
+
+// ---------------------------------------------------------------------------
+// Partners / suppliers
+// ---------------------------------------------------------------------------
+model Partner {
+  id            String   @id @default(cuid())
+  name          String
+  contactPerson String?
+  phone         String?
+  email         String?
+  currency      String   @default("USD")
+  terms         String? // условия сотрудничества
+  // schedule: on_booking | days_before_trip | after_client_payment |
+  //           weekly | semimonthly | monthly | custom_date
+  scheduleType  String   @default("on_booking")
+  scheduleValue String? // e.g. days count, day-of-month, or ISO date
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sales    Sale[]
+  tickets  Ticket[]
+  payments PartnerPayment[]
+}
+
+// ---------------------------------------------------------------------------
+// Sales (tour packages)
+// ---------------------------------------------------------------------------
+model Sale {
+  id            String    @id @default(cuid())
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id])
+  country       String
+  tourName      String
+  saleDate      DateTime  @default(now())
+  tripDate      DateTime?
+  touristsCount Int       @default(1)
+  sellPrice     Decimal // стоимость для клиента
+  costPrice     Decimal // закупочная стоимость
+  currency      String    @default("USD")
+  rateToBase    Decimal   @default(1)
+  partnerId     String?
+  partner       Partner?  @relation(fields: [partnerId], references: [id])
+  sellerId      String
+  seller        User      @relation("SaleSeller", fields: [sellerId], references: [id])
+  partnerDueDate DateTime? // когда платить партнёру (по графику)
+  comment       String?
+  status        String    @default("active") // active | cancelled
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  payments        Payment[]
+  tickets         Ticket[]
+  partnerPayments PartnerPayment[]
+
+  @@index([saleDate])
+  @@index([clientId])
+  @@index([partnerId])
+  @@index([sellerId])
+}
+
+// ---------------------------------------------------------------------------
+// Air tickets
+// ---------------------------------------------------------------------------
+model Ticket {
+  id            String    @id @default(cuid())
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id])
+  airline       String
+  fromCity      String
+  toCity        String
+  departureDate DateTime?
+  returnDate    DateTime?
+  flightNumber  String?
+  passengerName String
+  pnr           String?
+  ticketNumber  String?
+  sellPrice     Decimal
+  costPrice     Decimal
+  currency      String    @default("USD")
+  rateToBase    Decimal   @default(1)
+  partnerId     String?
+  partner       Partner?  @relation(fields: [partnerId], references: [id])
+  sellerId      String
+  seller        User      @relation("TicketSeller", fields: [sellerId], references: [id])
+  // booked | awaiting_payment | issued | exchanged | refunded | cancelled
+  status        String    @default("booked")
+  saleId        String? // если часть тур-пакета — не учитывать выручку повторно
+  sale          Sale?     @relation(fields: [saleId], references: [id])
+  pdfPath       String?
+  partnerDueDate DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  payments        Payment[]
+  partnerPayments PartnerPayment[]
+
+  @@index([departureDate])
+  @@index([clientId])
+}
+
+// ---------------------------------------------------------------------------
+// Client payments (several per sale/ticket)
+// ---------------------------------------------------------------------------
+model Payment {
+  id           String   @id @default(cuid())
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id])
+  saleId       String?
+  sale         Sale?    @relation(fields: [saleId], references: [id])
+  ticketId     String?
+  ticket       Ticket?  @relation(fields: [ticketId], references: [id])
+  amount       Decimal
+  currency     String   @default("USD")
+  rateToBase   Decimal  @default(1)
+  method       String   @default("cash") // cash | bank_transfer | card | qr
+  receivedById String
+  receivedBy   User     @relation("PaymentReceiver", fields: [receivedById], references: [id])
+  paidAt       DateTime @default(now())
+  comment      String?
+  createdAt    DateTime @default(now())
+
+  @@index([paidAt])
+  @@index([saleId])
+  @@index([clientId])
+  @@index([receivedById])
+}
+
+// ---------------------------------------------------------------------------
+// Partner payments (agency pays suppliers)
+// ---------------------------------------------------------------------------
+model PartnerPayment {
+  id         String   @id @default(cuid())
+  partnerId  String
+  partner    Partner  @relation(fields: [partnerId], references: [id])
+  saleId     String?
+  sale       Sale?    @relation(fields: [saleId], references: [id])
+  ticketId   String?
+  ticket     Ticket?  @relation(fields: [ticketId], references: [id])
+  amount     Decimal
+  currency   String   @default("USD")
+  rateToBase Decimal  @default(1)
+  method     String   @default("bank_transfer")
+  paidAt     DateTime @default(now())
+  comment    String?
+  paidById   String
+  paidBy     User     @relation("PartnerPaymentBy", fields: [paidById], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([paidAt])
+  @@index([partnerId])
+}
+
+// ---------------------------------------------------------------------------
+// Expenses
+// ---------------------------------------------------------------------------
+model Expense {
+  id          String   @id @default(cuid())
+  // rent | salary | ads | internet | bank_fee | office | other
+  category    String   @default("other")
+  amount      Decimal
+  currency    String   @default("USD")
+  rateToBase  Decimal  @default(1)
+  date        DateTime @default(now())
+  comment     String?
+  createdById String
+  createdBy   User     @relation("ExpenseBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([date])
+  @@index([category])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log (журнал изменений)
+// ---------------------------------------------------------------------------
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String // create | update | delete | login | ...
+  entity    String // Sale | Payment | Client | ...
+  entityId  String?
+  details   String? // JSON snapshot / diff
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entity])
+}
